@@ -1,56 +1,70 @@
-# Use the official Python 3.11 image as base
-FROM python:3.11
+# Use Python 3.11 slim image to reduce size
+FROM python:3.11-slim
 
+# Set environment variables
 ENV GRADIO_SERVER_NAME="0.0.0.0"
+ENV GRADIO_SERVER_PORT=7860
 
-
-# Set the working directory in the container
-WORKDIR /code
-
-# Copy the dependencies file to the working directory
-#COPY ./requirements.txt /code/requirements.txt
-
-# this will work too
-#COPY requirements.txt .
-
-# Install any dependencies
-#RUN pip install --no-cache-dir -r /code/requirements.txt
-
-COPY setup.py /code/setup.py
-
-RUN pip install --no-cache-dir '.[all]'
-
-#this one will work too
-#RUN pip install --no-cache-dir -r requirements.txt
-
-# Install rsync
-#RUN apt-get update && apt-get install -y rsync
-
-# Copy all files except the specified directory
-#COPY . .
-#RUN rsync -a --exclude='openChavenv/' ./ /CHACode/
-
-# Set up a new user named "user" with user ID 1000
+# Set up a new user
 RUN useradd -m -u 1000 user
 
-# Switch to the "user" user
-USER user
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set home to the user's home directory
+# Switch to the user
+USER user
 ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH
 
-# Set the working directory to the user's home directory
+# Set up the application directory
 WORKDIR $HOME/app
 
-# Copy the current directory contents into the container at $HOME/app setting the owner to the user
+# Copy the application files
 COPY --chown=user . $HOME/app
 
+# Install Python dependencies
+RUN pip install --no-cache-dir -e '.[all]' && \
+    playwright install
+
+# Expose the Gradio port
 EXPOSE 7860
 
-# Command to run the application
-#following works and gradio url works but not able to access local url on 127.0.0.1:7860
-CMD ["python", "main.py"]
+# Create a handler script for RunPod
+COPY --chown=user <<EOF handler.py
+import os
+from openCHA import openCHA
 
-#following works and gradio url works but not able to access local url on 127.0.0.1:7860
-# CMD ["python", "main.py", "--address", "0.0.0.0", "--port", "7860", "--allow-websocket-origin", "nirmits-openCHA.hf.space"]
+def handler(event):
+    try:
+        # Extract API keys from event payload if provided
+        api_keys = event.get('input', {}).get('api_keys', {})
+        
+        # Set environment variables for API keys
+        if 'openai_key' in api_keys:
+            os.environ['OPENAI_API_KEY'] = api_keys['openai_key']
+        if 'serpapi_key' in api_keys:
+            os.environ['SERPAPI_API_KEY'] = api_keys['serpapi_key']
+        
+        # Initialize CHA
+        cha = openCHA()
+        
+        # Configure the interface
+        interface = cha.run_with_interface()
+        
+        return {
+            "status": "success",
+            "url": f"http://0.0.0.0:7860"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+EOF
+
+# Start command for RunPod
+CMD ["python", "handler.py"]
